@@ -18,11 +18,6 @@ except Exception as e:
     print(f"Error loading model: {e}")
     exit()
 
-# --- Re-create preprocessing components from original data ---
-# This ensures preprocessing consistency with the training phase.
-# We need to reload the original data to calculate capping bounds and fit scaler
-# exactly as it was done during model training.
-
 try:
     original_data = pd.read_csv("/content/drive/MyDrive/Aupp/Fall 2025/Cloud ML and Data Engineering/ML Model Deployment on EC2 and Access it/diabetes_data.csv")
 except FileNotFoundError:
@@ -159,5 +154,6 @@ def predict():
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
+
 
 
