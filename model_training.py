@@ -8,6 +8,12 @@ from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, classification_report
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from imblearn.over_sampling import SMOTE, RandomOverSampler
+from imblearn.under_sampling import RandomUnderSampler
+from imblearn.pipeline import Pipeline
+from sklearn.linear_model import LogisticRegression
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.naive_bayes import GaussianNB
 
 # Load dataset
 data = pd.read_csv('diabetes_data.csv')
@@ -15,6 +21,9 @@ print(f"Dataset shape: {data.shape}")
 print(data.head())
 print(data.isna().sum())
 print(data.dtypes)
+
+# Check proportion of target feature
+print(data['diabetes'].value_counts(normalize=True).mul(100).round(2).astype(str) + '%')
 
 # Select continuous columns
 continuous_cols = ['age','bmi', 'HbA1c_level', 'blood_glucose_level']
@@ -87,7 +96,7 @@ data[columns_to_standardize] = scaler.fit_transform(data[columns_to_standardize]
 print(data.head())
 
 # Split DataFrame into X (train features) and y (predict features)
-X = data.iloc[:,[0,1,2,3,4,5,7,9,10,11,12,13]].values
+X = data.iloc[:,[0,1,2,3,4,5,7,8,9,10,11,12,13]].values
 y = data['diabetes'].values
 
 # Create train and test set
@@ -100,22 +109,32 @@ print('Y TRAIN DATA ', y_train.shape)
 print('X TEST DATA ', X_test.shape)
 print('Y TEST DATA ', y_test.shape)
 
-# Define the models
+balancer = SMOTE(random_state=42)
 models = {
-    "Random Forest": RandomForestClassifier(random_state=42),
-    "Gradient Boosting": GradientBoostingClassifier(random_state=42),
-    "KNN": KNeighborsClassifier()
+    "Logistic Regression": LogisticRegression(max_iter=2000),
+    "Decision Tree": DecisionTreeClassifier(),
+    "Random Forest": RandomForestClassifier(),
+    "Gradient Boosting": GradientBoostingClassifier(),
+    "KNN": KNeighborsClassifier(),
+    "Naive Bayes": GaussianNB()
 }
 
 trained_models = {}
 
 for name, model in models.items():
-    print(f"\nTraining {name}...")
-    model.fit(X_train, y_train)
-    trained_models[name] = model
+    print(f"\nTraining {name} with SMOTE...")
+
+    pipeline = Pipeline(steps=[
+        ('balancer', SMOTE(random_state=42)),  
+        ('model', model)
+    ])
+
+    pipeline.fit(X_train, y_train)
+    trained_models[name] = pipeline
+
     print(f"{name} trained successfully.")
 
-print("\nAll models trained.")
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 
 results = {}
 
@@ -140,6 +159,7 @@ for name, metrics in results.items():
         print(f"  {metric_name}: {value:.4f}")
 
 y_pred_test = trained_models['Gradient Boosting'].predict(X_test)
+print(y_pred_test)
 
 
 # Find the best performance model
@@ -155,16 +175,21 @@ print(f"The best performing model is '{best_model_name}' with an accuracy of {be
 
 # pickle file
 import pickle
-
-# Retrieve the best performing model object
-best_model = trained_models[best_model_name]
+model_to_save = trained_models['Gradient Boosting']
 
 # Define the filename for the pickle file
-filename = 'best_diabetes_model.pkl'
+filename = 'diabetes_prediction_model.pkl'
 
-# Save the best model to a pickle file
+# Save the model to a pickle file
 with open(filename, 'wb') as file:
-    pickle.dump(best_model, file)
+    pickle.dump(model_to_save, file)
 
-print(f"The best model '{best_model_name}' has been saved to '{filename}'.")
+print(f"Model successfully saved to {filename}")
+
+# Save the scaler object
+scaler_filename = 'scaler.pkl'
+with open(scaler_filename, 'wb') as file:
+    pickle.dump(scaler, file)
+
+print(f"Scaler successfully saved to {scaler_filename}")
 
