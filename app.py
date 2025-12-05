@@ -1,161 +1,120 @@
+import flask
 from flask import Flask, request, jsonify
 import pickle
 import pandas as pd
 import numpy as np
-from sklearn.preprocessing import StandardScaler
 
 app = Flask(__name__)
 
-# --- Load the trained model ---
+# --- Load the pre-trained model and scaler --- 
+# Ensure these files are in the same directory as your app.py
 try:
-    with open('best_diabetes_model.pkl', 'rb') as file:
-        best_model = pickle.load(file)
-    print("Model 'best_diabetes_model.pkl' loaded successfully.")
+    with open('diabetes_prediction_model.pkl', 'rb') as f:
+        model = pickle.load(f)
+    with open('scaler.pkl', 'rb') as f:
+        scaler = pickle.load(f)
+    print("Model and scaler loaded successfully.")
 except FileNotFoundError:
-    print("Error: 'best_diabetes_model.pkl' not found. Ensure the model is saved in the correct path.")
-    exit()
-except Exception as e:
-    print(f"Error loading model: {e}")
+    print("Error: Model or scaler file not found. Make sure 'diabetes_prediction_model.pkl' and 'scaler.pkl' are in the same directory.")
+    # Exit or handle the error appropriately if files are missing
     exit()
 
-# --- Re-create preprocessing components from original data ---
-# This ensures preprocessing consistency with the training phase.
-# We need to reload the original data to calculate capping bounds and fit scaler
-# exactly as it was done during model training.
-
-try:
-    original_data = pd.read_csv('diabetes_data.csv')
-except FileNotFoundError:
-    print("Error: diabetes_data.csv not found. Please ensure the path is correct or the file is mounted.")
-    exit()
-
-# 1. Capping bounds calculation (from original data before any capping applied)
-capping_bounds = {}
-for col in ['bmi', 'HbA1c_level', 'blood_glucose_level']:
-    Q1 = original_data[col].quantile(0.25)
-    Q3 = original_data[col].quantile(0.75)
-    IQR = Q3 - Q1
-    lower_bound = Q1 - 1.5 * IQR
-    upper_bound = Q3 + 1.5 * IQR
-    capping_bounds[col] = {'lower': lower_bound, 'upper': upper_bound}
-
-# 2. Encode Gender and One-hot encode smoking_history for scaler fitting
+# --- Preprocessing components (must be consistent with training) ---
+# These were calculated from the original training data
+capping_bounds = {
+    'bmi': {'lower': 14.705, 'upper': 38.505},
+    'HbA1c_level': {'lower': 2.7, 'upper': 8.3},
+    'blood_glucose_level': {'lower': 11.5, 'upper': 247.5}
+}
 gender_mapper = {'Male':0, 'Female':1, 'Other':2}
-# Set the pandas option to opt-in to the future behavior for replace to avoid FutureWarning
-pd.set_option('future.no_silent_downcasting', True)
-original_data['Encode_Gender'] = original_data['gender'].replace(gender_mapper)
-original_data['Encode_Gender'] = pd.to_numeric(original_data['Encode_Gender'])
-original_data = pd.get_dummies(original_data, columns=['smoking_history'], dtype=bool)
-original_data.drop(columns=['gender'], inplace=True)
-
-# Apply capping to original_data (this is what happened during training prep)
-for col in ['bmi', 'HbA1c_level', 'blood_glucose_level']:
-    lb = capping_bounds[col]['lower']
-    ub = capping_bounds[col]['upper']
-    original_data[col] = np.where(original_data[col] < lb, lb, original_data[col])
-    original_data[col] = np.where(original_data[col] > ub, ub, original_data[col])
-
-# 3. Fit the scaler on the preprocessed original_data
 columns_to_standardize = ['age','bmi', 'HbA1c_level', 'blood_glucose_level']
-scaler = StandardScaler()
-scaler.fit(original_data[columns_to_standardize])
 
-# --- Define Prediction Function (similar to the one in the notebook but self-contained) ---
-def predict_diabetes_api(age, gender, hypertension, heart_disease, bmi, HbA1c_level, blood_glucose_level, smoking_history):
-    user_data = pd.DataFrame({
-        'age': [age],
-        'hypertension': [hypertension],
-        'heart_disease': [heart_disease],
-        'bmi': [bmi],
-        'HbA1c_level': [HbA1c_level],
-        'blood_glucose_level': [blood_glucose_level]
-    })
+# Feature names in the exact order the model expects
+# This list should match `feature_names_for_prediction` from the notebook
+feature_names_for_prediction = [
+    'age', 'hypertension', 'heart_disease', 'bmi', 'HbA1c_level', 'blood_glucose_level',
+    'Encode_Gender', 'smoking_history_No Info', 'smoking_history_current',
+    'smoking_history_ever', 'smoking_history_former', 'smoking_history_never',
+    'smoking_history_not current'
+]
 
-    for col in ['bmi', 'HbA1c_level', 'blood_glucose_level']:
-        lb = capping_bounds[col]['lower']
-        ub = capping_bounds[col]['upper']
-        user_data[col] = np.where(user_data[col] < lb, lb, user_data[col])
-        user_data[col] = np.where(user_data[col] > ub, ub, user_data[col])
-
-    user_data[columns_to_standardize] = scaler.transform(user_data[columns_to_standardize])
-
-    encoded_gender = gender_mapper.get(gender, 2)
-
-    input_smoking_features = {
-        'smoking_history_current': False,
-        'smoking_history_ever': False,
-        'smoking_history_former': False,
-        'smoking_history_never': False,
-        'smoking_history_not current': False
-    }
-    if smoking_history != 'No Info':
-        col_name = f'smoking_history_{smoking_history}'
-        if col_name in input_smoking_features:
-            input_smoking_features[col_name] = True
-
-    input_df_for_pred = pd.DataFrame({
-        'age': user_data['age'][0],
-        'hypertension': user_data['hypertension'][0],
-        'heart_disease': user_data['heart_disease'][0],
-        'bmi': user_data['bmi'][0],
-        'HbA1c_level': user_data['HbA1c_level'][0],
-        'blood_glucose_level': user_data['blood_glucose_level'][0],
-        'Encode_Gender': encoded_gender
-    }, index=[0])
-
-    input_df_for_pred = pd.concat([
-        input_df_for_pred,
-        pd.DataFrame([input_smoking_features])
-    ], axis=1)
-
-    final_features_order = [
-        'age', 'hypertension', 'heart_disease', 'bmi', 'HbA1c_level', 'blood_glucose_level',
-        'Encode_Gender',
-        'smoking_history_current', 'smoking_history_ever', 'smoking_history_former',
-        'smoking_history_never', 'smoking_history_not current'
-    ]
-    input_array = input_df_for_pred[final_features_order].values
-
-    prediction = best_model.predict(input_array)
-    prediction_proba = best_model.predict_proba(input_array)
-
-    return prediction[0], prediction_proba[0]
-
-# --- API Endpoint ---
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        data = request.get_json(force=True)
+        json_ = request.json
+        # Convert incoming JSON data to a pandas DataFrame
+        # Ensure all expected fields are present and handle potential missing keys
+        input_df = pd.DataFrame(json_, index=[0])
 
-        # Extract features from the request data
-        age = data['age']
-        gender = data['gender'] # 'Male', 'Female', 'Other'
-        hypertension = data['hypertension']
-        heart_disease = data['heart_disease']
-        bmi = data['bmi']
-        hba1c_level = data['HbA1c_level']
-        blood_glucose_level = data['blood_glucose_level']
-        smoking_history = data['smoking_history'] # 'No Info', 'never', 'former', 'current', 'not current', 'ever'
+        # --- Apply the same preprocessing steps as in training ---
 
-        # Get prediction and probabilities
-        predicted_class, probabilities = predict_diabetes_api(
-            age, gender, hypertension, heart_disease, bmi,
-            hba1c_level, blood_glucose_level, smoking_history
-        )
+        # 1. Capping numerical features
+        for col in ['bmi', 'HbA1c_level', 'blood_glucose_level']:
+            if col in input_df.columns:
+                lb = capping_bounds[col]['lower']
+                ub = capping_bounds[col]['upper']
+                input_df[col] = np.where(input_df[col] < lb, lb, input_df[col])
+                input_df[col] = np.where(input_df[col] > ub, ub, input_df[col])
+            else:
+                return jsonify({'error': f'Missing required input: {col}'}), 400
 
+        # 2. Standard Scaling
+        input_df[columns_to_standardize] = scaler.transform(input_df[columns_to_standardize])
+
+        # 3. Encode gender
+        if 'gender' in input_df.columns:
+            input_df['Encode_Gender'] = input_df['gender'].map(gender_mapper).fillna(2) # Default to 'Other' if not found
+            input_df.drop(columns=['gender'], inplace=True)
+        else:
+             return jsonify({'error': 'Missing required input: gender'}), 400
+
+        # 4. One-hot encode smoking_history
+        # Create columns for all smoking history categories, initialized to False
+        for sh_col in [col for col in feature_names_for_prediction if 'smoking_history_' in col]:
+            input_df[sh_col] = False
+        
+        if 'smoking_history' in input_df.columns:
+            smoking_history_val = input_df['smoking_history'][0] # Get the single value
+            if smoking_history_val == 'No Info':
+                input_df['smoking_history_No Info'] = True
+            else:
+                col_name = f'smoking_history_{smoking_history_val}'
+                if col_name in input_df.columns:
+                    input_df[col_name] = True
+                else:
+                    # Handle unexpected smoking_history value
+                    return jsonify({'error': f'Invalid smoking_history value: {smoking_history_val}'}), 400
+            input_df.drop(columns=['smoking_history'], inplace=True)
+        else:
+            return jsonify({'error': 'Missing required input: smoking_history'}), 400
+        
+        # Ensure the final DataFrame has all features in the correct order
+        # If any feature is missing from the input, it will be added with a default value (e.g., 0 for numerical, False for boolean)
+        # This handles cases where some boolean smoking_history columns might not be explicitly created if smoking_history is not provided or is 'No Info'
+        final_input = pd.DataFrame(columns=feature_names_for_prediction)
+        final_input = pd.concat([final_input, input_df], ignore_index=True)
+        final_input = final_input.fillna(False) # Fill missing boolean columns (smoking history) with False
+        final_input = final_input.astype({col: bool for col in final_input.columns if 'smoking_history_' in col})
+        
+        # Convert to numpy array for prediction
+        input_array = final_input[feature_names_for_prediction].values
+
+        # Make prediction
+        prediction = model.predict(input_array)
+        prediction_proba = model.predict_proba(input_array)
+
+        # Return results
         result = {
-            'prediction': int(predicted_class),
-            'probability_no_diabetes': float(probabilities[0]),
-            'probability_diabetes': float(probabilities[1]),
-            'risk_level': 'HIGH RISK OF DIABETES' if predicted_class == 1 else 'LOW RISK OF DIABETES'
+            'prediction': int(prediction[0]),
+            'probability_no_diabetes': float(prediction_proba[0][0]),
+            'probability_diabetes': float(prediction_proba[0][1])
         }
-
         return jsonify(result)
 
-    except KeyError as e:
-        return jsonify({'error': f'Missing data field: {e}'}), 400
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({'error': str(e)}), 400
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000)
+    # For local development, use debug=True. For production, disable debug.
+    # You might also want to specify host='0.0.0.0' to make it accessible externally
+    app.run(debug=True, host='0.0.0.0', port=5000)
